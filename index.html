@@ -1,4 +1,9 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html>
+<html lang="sr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#7DB8FF">
 <title>Sličice za dnevnik</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,6 +27,8 @@
   --guide:#B8BED6; --shadow:#0C0E1C; color-scheme:dark}
 
 *{box-sizing:border-box}
+[hidden]{display:none!important}
+img{max-width:100%}
 body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:18px 110px;
   background-image:radial-gradient(var(--soft) 1.4px,transparent 1.6px);background-size:22px 22px}
@@ -103,8 +110,19 @@ input[type=range]{width:100%;accent-color:var(--coral);height:28px}
 .msg.err{color:var(--coral)}
 .empty{padding:40px 16px;text-align:center;color:var(--muted);font-weight:700}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+#printArea{display:none}
+@page{size:A4;margin:0}
+@media print{
+  body{background:#fff!important;padding:0!important}
+  body>*:not(#printArea){display:none!important}
+  #printArea{display:block}
+  .ppage{position:relative;width:210mm;height:297mm;overflow:hidden;page-break-after:always;break-after:page}
+  .ppage:last-child{page-break-after:auto;break-after:auto}
+  .ppage img{position:absolute;display:block;object-fit:cover}
+  .ppage img.g{outline:0.15mm dashed #BEC3D6}
+}
 </style>
-
+</head><body>
 <div class="wrap">
   <header>
     <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
@@ -218,9 +236,11 @@ input[type=range]{width:100%;accent-color:var(--coral);height:28px}
   <span class="info" id="barInfo">–</span>
   <button class="btn primary" type="button" id="pdfBtn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/></svg>Preuzmi PDF za štampu</button>
+  <button class="btn" type="button" id="printBtn">Štampaj odmah</button>
   <span class="msg" id="msg" role="status"></span>
 </div>
 
+<div id="printArea"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 (() => {
@@ -375,7 +395,7 @@ function render(){
   });
   $("pagePill").textContent = `${pages.length} ${pages.length===1?"strana":"strane"}`;
   $("barInfo").textContent = `${n} slika · ${pages.length} A4`;
-  $("pdfBtn").disabled = !n;
+  $("pdfBtn").disabled = !n; $("printBtn").disabled = !n;
   renderSheet(pages);
 }
 
@@ -428,8 +448,41 @@ async function renderPiece(it){
   if (img.close) img.close();
   return c.toDataURL("image/jpeg", .9);
 }
-let downloads = null;
-if (window.claude?.use) window.claude.use("downloads").then(d => { downloads = d; }).catch(()=>{});
+function saveBlob(blob, name){
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+const downloads = { save: async ({filename, data}) => saveBlob(data, filename) };
+
+let printUrls = [];
+$("printBtn").onclick = async () => {
+  const btn = $("printBtn"); btn.disabled = true;
+  try {
+    printUrls.forEach(u => URL.revokeObjectURL(u)); printUrls = [];
+    const area = $("printArea"); area.innerHTML = "";
+    const pages = layout(), total = pages.reduce((a,p)=>a+p.length,0);
+    const loads = []; let k = 0;
+    for (const pg of pages){
+      const pe = document.createElement("div"); pe.className = "ppage";
+      for (const it of pg){
+        setMsg(`Spremam za štampu… ${++k} / ${total}`);
+        const dataUrl = await renderPiece(it);
+        const blob = await (await fetch(dataUrl)).blob();
+        const url = URL.createObjectURL(blob); printUrls.push(url);
+        const img = document.createElement("img"); img.src = url; if (state.guides) img.className = "g";
+        Object.assign(img.style, {left:it.x*10+"mm", top:it.y*10+"mm", width:it.w*10+"mm", height:it.h*10+"mm"});
+        loads.push(img.decode ? img.decode().catch(()=>{}) : Promise.resolve());
+        pe.appendChild(img);
+      }
+      area.appendChild(pe);
+    }
+    await Promise.all(loads);
+    setMsg("U prozoru za štampu izaberi štampač i veličinu 100%.");
+    window.print();
+  } catch(e){ setMsg("Nešto nije uspelo. Probaj sa manje slika odjednom.", true); }
+  finally { btn.disabled = !state.photos.length; }
+};
 
 $("pdfBtn").onclick = async () => {
   if (!window.jspdf){ setMsg("PDF alat nije učitan. Proveri internet i osveži stranu.", true); return; }
@@ -449,8 +502,7 @@ $("pdfBtn").onclick = async () => {
     }
     const blob = doc.output("blob");
     const d = new Date(), name = `slike-za-stampu-${d.getDate()}-${d.getMonth()+1}.pdf`;
-    if (!downloads){ setMsg("Preuzimanje ne radi u ovom prikazu. Otvori stranicu u Claude aplikaciji ili na claude.ai.", true); return; }
-    await downloads.save({filename:name, data:blob});
+        await downloads.save({filename:name, data:blob});
     setMsg("PDF je sačuvan. Štampaj ga u stvarnoj veličini (100%).");
   } catch(e){
     const c = e && e.code;
@@ -461,5 +513,4 @@ $("pdfBtn").onclick = async () => {
 render();
 })();
 </script>
-
 </body></html>
